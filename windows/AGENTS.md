@@ -95,11 +95,14 @@
 |---|---|---|
 | Stale | focus token、组合纪元、reset token 或焦点代已被取代 | 只丢这颗键，不再发起重置 |
 | Resync | 宿主拒绝 edit session（S_FALSE、E_NOTIMPL 等）、RequestEditSession 失败、异步投递失败，以及 OnEndEdit 组合属性检查、文档不匹配等非传输问题 | 丢键、吞队列、本地取消组合；不轮换 token、不关管道，闸门重开时在同一 token 上发 HideCandidateWnd 清 Server 组合 |
-| Transport | 写失败、回复读失败/坏帧、`TransportUnavailable`、`DefinitelyNotSent`、`DeliveryAmbiguous`、提交回复 300 ms 超时、worker 断开 | 丢键、吞队列、完整重置（新 focus token、重开回复管道） |
+| Transport | 写失败、回复读失败/坏帧、`TransportUnavailable`、`DefinitelyNotSent`、`DeliveryAmbiguous`（仅真实管道失败）、worker 断开 | 丢键、吞队列、完整重置（新 focus token、重开回复管道） |
 | Offline | 离线原始通道里的宿主失败 | 丢键、吞队列，保留本地组合（此时它是唯一权威） |
 
 翻页与高亮移动键（PageUp/PageDown/Up/Down/Tab）的回复只是确认，缺失是软错过，不拆管道、不清
-队列；其余候选键可能上屏，保留 300 ms 提交预算与「歧义即丢键 + 传输重置」。
+队列；其余候选键可能上屏。提交回复的 300 ms 是慢请求观测阈值（`CommitReplyWaitPolicy.h` /
+`PreserveInputKeepWaiting`）：超时只记 `reply-wait-slow`，继续等待同一 `request_id`，不关管道、
+不清队列、不因观测超时产生 `DeliveryAmbiguous`。真实断线仍走 Transport。完整异步待回复（把等
+待移出 TSF 编辑会话）仍是后续阶段；本阶段先消除「慢回复即吞字」。
 
 ## 焦点、候选与离线回退
 

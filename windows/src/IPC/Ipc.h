@@ -116,24 +116,28 @@ bool TryReadCandidatePageFromSharedMemory(_Out_ std::wstring *candidatePage);
 // returns a non-TransportUnavailable empty frame for the caller to fall back.
 struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithTimeout(uint64_t expectedRequestId,
                                                                        bool abortTransportOnTimeout);
-// Replies that commit text (candidate selection, candidate + punctuation) get
-// a longer budget than ordinary keys. The request has already been written, so
-// a miss is DeliveryAmbiguous: the Server may have committed the selection.
-// Waiting for the same request_id is the only way to learn which candidate it
-// chose; a slow machine (battery, throttled disk) routinely needs more than
-// the ordinary 50ms. A miss past this budget drops the key and resets the
-// transport; the selection is never sent a second time.
+// Observation budget for replies that commit text (candidate selection,
+// candidate + punctuation). The request has already been written; waiting for
+// the same request_id is the only way to learn which candidate the Server
+// chose. A slow machine (battery, throttled disk) routinely needs more than
+// the ordinary 50ms. Past this budget the wait logs a slow-request observation
+// and keeps waiting for the original reply (see CommitReplyWaitPolicy.h): it
+// does not close the pipe, clear the deferred queue, or treat the miss as
+// DeliveryAmbiguous. Genuine pipe failures still return TransportUnavailable.
+// The selection is never sent a second time.
 constexpr DWORD FANY_IME_COMMIT_REPLY_TIMEOUT_MS = 300;
 struct FanyImeNamedpipeDataToTsf *TryReadCommitReplyFromServerPipe(uint64_t expectedRequestId);
 // True when requestId names a request that was actually written to the Server,
-// i.e. a lost reply is DeliveryAmbiguous rather than DefinitelyNotSent.
+// i.e. a lost reply on a real transport failure is DeliveryAmbiguous rather
+// than DefinitelyNotSent.
 inline bool IsDeliveredServerRequestId(uint64_t requestId)
 {
     return requestId != FANY_IME_NO_REQUEST_ID && requestId != FANY_IME_UNSOLICITED_REQUEST_ID;
 }
-// Edit-session result for a commit whose reply never arrived although the
-// request was delivered. The key is dropped with the composition and never
-// sent again (DeferredKeyFailureReason::DeliveryAmbiguous).
+// Edit-session result for a commit whose reply pipe actually failed although
+// the request was delivered. The key is dropped with the composition and never
+// sent again (DeferredKeyFailureReason::DeliveryAmbiguous). A slow reply past
+// FANY_IME_COMMIT_REPLY_TIMEOUT_MS alone must not produce this HRESULT.
 constexpr HRESULT FANY_E_COMMIT_REPLY_AMBIGUOUS = __HRESULT_FROM_WIN32(ERROR_TIMEOUT);
 // A key handler applied its key, but the result differs from what the deferred
 // FIFO projected for the keys queued behind it. Maps to ProjectionInvalidated.

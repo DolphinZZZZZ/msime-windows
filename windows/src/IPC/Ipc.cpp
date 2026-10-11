@@ -1,4 +1,5 @@
 #include "Ipc.h"
+#include "Key/CommitReplyWaitPolicy.h"
 #include "../../../engine/contracts/ipc_negotiation.h"
 #include <algorithm>
 #include <cstring>
@@ -1281,7 +1282,8 @@ bool SendToNamedpipe(bool *deliveryAmbiguous = nullptr)
 
 static struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithDeadline(uint64_t expectedRequestId,
                                                                                bool abortTransportOnTimeout,
-                                                                               DWORD timeoutMs);
+                                                                               DWORD timeoutMs,
+                                                                               bool keepWaitingPastTimeout = false);
 
 struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithTimeout(uint64_t expectedRequestId,
                                                                        bool abortTransportOnTimeout)
@@ -1291,12 +1293,28 @@ struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithTimeout(uint64_t 
 
 struct FanyImeNamedpipeDataToTsf *TryReadCommitReplyFromServerPipe(uint64_t expectedRequestId)
 {
-    return TryReadDataFromServerPipeWithDeadline(expectedRequestId, true, FANY_IME_COMMIT_REPLY_TIMEOUT_MS);
+    // Preserve-input policy: the observation budget only records a slow request.
+    // Keep waiting for the original request_id; do not abort the pipe or clear
+    // the deferred queue solely because the budget elapsed.
+    if (ShouldKeepWaitingPastCommitReplyObservation(kCommitReplyTimeoutPolicy))
+    {
+        return TryReadDataFromServerPipeWithDeadline(expectedRequestId, /*abortTransportOnTimeout=*/false,
+                                                     FANY_IME_COMMIT_REPLY_TIMEOUT_MS,
+                                                     /*keepWaitingPastTimeout=*/true);
+    }
+    if (ShouldAbortTransportOnCommitReplyTimeout(kCommitReplyTimeoutPolicy))
+    {
+        return TryReadDataFromServerPipeWithDeadline(expectedRequestId, /*abortTransportOnTimeout=*/true,
+                                                     FANY_IME_COMMIT_REPLY_TIMEOUT_MS);
+    }
+    return TryReadDataFromServerPipeWithDeadline(expectedRequestId, /*abortTransportOnTimeout=*/false,
+                                                 FANY_IME_COMMIT_REPLY_TIMEOUT_MS);
 }
 
 static struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithDeadline(uint64_t expectedRequestId,
                                                                                bool abortTransportOnTimeout,
-                                                                               DWORD timeoutMs)
+                                                                               DWORD timeoutMs,
+                                                                               bool keepWaitingPastTimeout)
 {
     PerfTimer replyWaitTimer;
 
@@ -1343,17 +1361,31 @@ static struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithDeadline(u
     }
 
     const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+    bool loggedSlowObservation = false;
 
     while (true)
     {
         DWORD bytesRead = 0;
         namedpipeDataFromServer = {};
         const ULONGLONG now = GetTickCount64();
-        const DWORD remainingMs = now >= deadline ? 0 : static_cast<DWORD>(deadline - now);
+        // Preserve-input waits in observation-sized chunks so a slow reply can
+        // be logged once without ever timing out into TransportUnavailable.
+        const DWORD remainingMs = keepWaitingPastTimeout
+                                      ? (timeoutMs == 0 ? 50u : timeoutMs)
+                                      : (now >= deadline ? 0u : static_cast<DWORD>(deadline - now));
         const OverlappedReadResult readResult = ReadOverlappedWithTimeout(
             hFromServerPipe, &namedpipeDataFromServer, sizeof(namedpipeDataFromServer), remainingMs, bytesRead);
         if (readResult == OverlappedReadResult::TimedOut)
         {
+            if (keepWaitingPastTimeout)
+            {
+                if (!loggedSlowObservation && replyWaitTimer.ElapsedMs() >= timeoutMs)
+                {
+                    DebugTsfKeyLatency(L"reply-wait-slow", expectedRequestId, replyWaitTimer.ElapsedMs(), S_FALSE);
+                    loggedSlowObservation = true;
+                }
+                continue;
+            }
             DebugTsfKeyLatency(L"reply-wait-timeout", expectedRequestId, replyWaitTimer.ElapsedMs(),
                                HRESULT_FROM_WIN32(ERROR_TIMEOUT));
             if (!abortTransportOnTimeout)
@@ -1406,7 +1438,7 @@ static struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithDeadline(u
         // that session retrieve it by its explicit request ID later.
         CachePendingReply(namedpipeDataFromServer);
 
-        if (GetTickCount64() >= deadline)
+        if (!keepWaitingPastTimeout && GetTickCount64() >= deadline)
         {
             break;
         }
@@ -1416,6 +1448,8 @@ static struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithDeadline(u
     // Server may already have committed a selection, so preserving local
     // composition would split the two state machines. Treat this exactly like
     // a broken transport and schedule a tokenized reset plus local cancel.
+    // Preserve-input commit waits never reach here: they keep looping until the
+    // matching reply arrives or the pipe actually fails.
     if (!abortTransportOnTimeout)
     {
         DebugTsfKeyLatency(L"reply-soft-miss", expectedRequestId, replyWaitTimer.ElapsedMs(), S_FALSE);

@@ -57,6 +57,11 @@ target_include_directories(test_deferred_key_failure_policy PRIVATE ../src)
 target_compile_features(test_deferred_key_failure_policy PRIVATE cxx_std_17)
 add_test(NAME deferred_key_failure_policy COMMAND test_deferred_key_failure_policy)
 
+add_executable(test_commit_reply_wait_policy commit_reply_wait_policy.cpp)
+target_include_directories(test_commit_reply_wait_policy PRIVATE ../src)
+target_compile_features(test_commit_reply_wait_policy PRIVATE cxx_std_17)
+add_test(NAME commit_reply_wait_policy COMMAND test_commit_reply_wait_policy)
+
 add_executable(test_caret_anchor_policy caret_anchor_policy.cpp)
 target_include_directories(test_caret_anchor_policy PRIVATE ../src)
 target_compile_features(test_caret_anchor_policy PRIVATE cxx_std_17)
