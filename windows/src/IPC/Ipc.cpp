@@ -1293,22 +1293,21 @@ struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithTimeout(uint64_t 
 
 struct FanyImeNamedpipeDataToTsf *TryReadCommitReplyFromServerPipe(uint64_t expectedRequestId)
 {
-    // Preserve-input policy: the observation budget only records a slow request.
-    // Keep waiting for the original request_id; do not abort the pipe or clear
-    // the deferred queue solely because the budget elapsed.
-    if (ShouldKeepWaitingPastCommitReplyObservation(kCommitReplyTimeoutPolicy))
-    {
-        return TryReadDataFromServerPipeWithDeadline(expectedRequestId, /*abortTransportOnTimeout=*/false,
-                                                     FANY_IME_COMMIT_REPLY_TIMEOUT_MS,
-                                                     /*keepWaitingPastTimeout=*/true);
-    }
-    if (ShouldAbortTransportOnCommitReplyTimeout(kCommitReplyTimeoutPolicy))
-    {
-        return TryReadDataFromServerPipeWithDeadline(expectedRequestId, /*abortTransportOnTimeout=*/true,
-                                                     FANY_IME_COMMIT_REPLY_TIMEOUT_MS);
-    }
+    // Hard-wired PreserveInputKeepWaiting: do not gate this behind a constexpr
+    // policy branch that can be confused with SoftMiss/AbortTransport at call
+    // sites. The 300ms budget only observes slowness (reply-wait-slow); we keep
+    // waiting for the same request_id and never abort/clear on observation alone.
+    // CommitReplyWaitPolicy.h remains the documented/tested policy source.
+    static_assert(ShouldKeepWaitingPastCommitReplyObservation(kCommitReplyTimeoutPolicy),
+                  "commit reply path must keep waiting past the observation budget");
+    static_assert(!ShouldAbortTransportOnCommitReplyTimeout(kCommitReplyTimeoutPolicy),
+                  "commit reply path must not abort transport on observation timeout");
+    static_assert(!ShouldSoftMissOnCommitReplyTimeout(kCommitReplyTimeoutPolicy),
+                  "commit reply path must not soft-miss on observation timeout");
+    DebugTsfKeyLatency(L"commit-reply-preserve-enter", expectedRequestId, 0.0, S_OK);
     return TryReadDataFromServerPipeWithDeadline(expectedRequestId, /*abortTransportOnTimeout=*/false,
-                                                 FANY_IME_COMMIT_REPLY_TIMEOUT_MS);
+                                                 FANY_IME_COMMIT_REPLY_TIMEOUT_MS,
+                                                 /*keepWaitingPastTimeout=*/true);
 }
 
 static struct FanyImeNamedpipeDataToTsf *TryReadDataFromServerPipeWithDeadline(uint64_t expectedRequestId,

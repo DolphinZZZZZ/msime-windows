@@ -25,6 +25,8 @@ enum class CommitReplyTimeoutPolicy
 };
 
 // Active policy for TryReadCommitReplyFromServerPipe.
+// The commit-reply hot path hard-wires keepWaitingPastTimeout=true and
+// static_asserts this value; do not reintroduce a runtime SoftMiss/Abort branch there.
 inline constexpr CommitReplyTimeoutPolicy kCommitReplyTimeoutPolicy =
     CommitReplyTimeoutPolicy::PreserveInputKeepWaiting;
 
